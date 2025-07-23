@@ -650,6 +650,7 @@ if __name__ == "__main__":
     #Bithumb_BB_Bot()  # 테스트용 즉시 실행
     #get_coin_list()
     schedule.every().hour.at(":01").do(Bithumb_BB_Bot)
+    schedule.every().hour.at(":31").do(Bithumb_BB_Bot)
     while True:
         schedule.run_pending()
         time.sleep(1)
