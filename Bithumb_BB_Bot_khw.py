@@ -27,6 +27,97 @@ import line_alert
 import pprint
 import GMA_Candle
 
+def get_coin_list():
+        #투자할 종목!
+    # 아래는 기존 고정 리스트를 대체합니다.
+    # 1. 각 기준별 TopCoinList를 직접 생성
+    # 2. 세 리스트의 교집합을 구해 InvestCoinList로 할당
+    print("--------------------------------")
+    print("TopCoinList 생성중")
+    print("--------------------------------")
+
+    # === 1. 거래대금 기준 TopCoinList (상위 60개) ===
+    TOP_NUM_VALUE = 60
+    TOP_NUM_MA = 30
+    TOP_NUM_UPRATE = 15
+    Tickers = myBithumb.GetTickers()
+    time.sleep(0.1)
+    CautionCoinList = myBithumb.Get_CAUTION_Tickers()
+    TIME_PERIOD = "30m"
+
+    # 거래대금 상위 60개
+    dic_coin_value = dict()
+    for ticker in Tickers:
+        if ticker in CautionCoinList:
+            continue
+        try:
+            time.sleep(0.1)
+            df = myBithumb.GetOhlcv(ticker, TIME_PERIOD, 200)
+            if len(df) < 1:
+                continue
+            current_value = float(df['value'].iloc[-1])
+            dic_coin_value[ticker] = current_value
+        except Exception:
+            continue
+    dic_sorted_coin_value = sorted(dic_coin_value.items(), key=lambda x: x[1], reverse=True)
+    TopCoinList_Value = [coin_data[0] for i, coin_data in enumerate(dic_sorted_coin_value) if i < TOP_NUM_VALUE]
+    print('거래대금 상위:', TopCoinList_Value)
+
+    # === 2. MA 기준 TopCoinList (상위 30개, 거래대금 상위 60개 내에서만) ===
+    MA_PERIOD = 60
+    dic_ma_above = dict()
+    for ticker in TopCoinList_Value:
+        try:
+            time.sleep(0.1)
+            df = myBithumb.GetOhlcv(ticker, TIME_PERIOD, MA_PERIOD + 10)
+            if len(df) < MA_PERIOD + 2:
+                continue
+            df['MA'] = df['close'].rolling(window=MA_PERIOD).mean()
+            prev_price = float(df['close'].iloc[-1])
+            prev_ma = float(df['MA'].iloc[-1])
+            is_above_ma = prev_price > prev_ma
+            if is_above_ma:
+                disparity = (prev_price / prev_ma) * 100
+                dic_ma_above[ticker] = disparity
+        except Exception:
+            continue
+    dic_sorted_ma_above = sorted(dic_ma_above.items(), key=lambda x: x[1], reverse=True)
+    TopCoinList_MA = [coin_data[0] for i, coin_data in enumerate(dic_sorted_ma_above) if i < TOP_NUM_MA]
+    print('MA 상위:', TopCoinList_MA)
+
+    # === 3. 등락률 기준 TopCoinList (상위 15개, 위 30개 내에서만) ===
+    MIN_RATE = 1.5
+    dic_coin_rate = dict()
+    for ticker in TopCoinList_MA:
+        try:
+            time.sleep(0.1)
+            df = myBithumb.GetOhlcv(ticker, TIME_PERIOD, 5)
+            if len(df) < 4:
+                continue
+            close = df['close']
+            rate1 = abs((float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100)
+            rate2 = abs((float(close.iloc[-2]) - float(close.iloc[-3])) / float(close.iloc[-3]) * 100)
+            rate3 = abs((float(close.iloc[-3]) - float(close.iloc[-4])) / float(close.iloc[-4]) * 100)
+            sum_rate = rate1 + rate2 + rate3
+            dic_coin_rate[ticker] = sum_rate
+        except Exception:
+            continue
+    dic_sorted_coin_rate = sorted(dic_coin_rate.items(), key=lambda x: x[1], reverse=True)
+    TopCoinList_UpRate = []
+    cnt = 0
+    for coin_data in dic_sorted_coin_rate:
+        if coin_data[1] >= MIN_RATE:
+            cnt += 1
+            if cnt <= TOP_NUM_UPRATE:
+                TopCoinList_UpRate.append(coin_data[0])
+            else:
+                break
+    print('등락률 상위:', TopCoinList_UpRate)
+
+    InvestCoinList = TopCoinList_UpRate
+    print('최종 투자 대상:', InvestCoinList)
+    return InvestCoinList
+
 
 def Bithumb_BB_Bot():
     #시간 정보를 읽는다
@@ -64,10 +155,27 @@ def Bithumb_BB_Bot():
     InvestMoney = TotalMoney * 0.30 #30% 투자 적절히 수정!
     ######################################################
 
+    InvestCoinList = get_coin_list()
 
-    #투자할 종목!
-    InvestCoinList = ['KRW-BTC','KRW-ETH','KRW-XRP','KRW-SOL','KRW-DOGE','KRW-ADA','KRW-XLM','KRW-ONDO','KRW-PEPE'] #비트코인 
-
+    # === 투자 대상이 아닌 코인 전량 매도 ===
+    for coin, info in balances.items():
+        if coin == 'total' or coin == 'KRW':
+            continue
+        # info는 [보유수량, 평가금액, 매수금액, 매수평균가, 평가손익, 수익률] 등으로 구성되어 있다고 가정
+        # 보유수량이 0보다 크고, 투자대상에 없는 코인만 매도
+        try:
+            amount = float(info[0])
+        except Exception:
+            continue
+        if amount > 0 and coin not in InvestCoinList:
+            print(f"{coin} 전량 매도: {amount}")
+            try:
+                myBithumb.SellCoinMarket(coin, amount)
+                msg = f"{coin}는 투자대상에서 제외되어 전량({amount}) 매도했습니다."
+                print(msg)
+                line_alert.SendMessage(msg)
+            except Exception as e:
+                print(f"{coin} 매도 실패: {e}")
 
     CoinMoney = InvestMoney / len(InvestCoinList) #코인당 할당 금액
 
@@ -176,7 +284,7 @@ def Bithumb_BB_Bot():
 
 
 
-        delay = '1h'
+        delay = '30m'
         #if PickCoinInfo['DateStrForToday'] != day_str: #오늘 매매 내역이 없다면
         if True:
 
@@ -540,6 +648,7 @@ import schedule
 if __name__ == "__main__":
     trading_in_progress = False
     #Bithumb_BB_Bot()  # 테스트용 즉시 실행
+    #get_coin_list()
     schedule.every().hour.at(":01").do(Bithumb_BB_Bot)
     while True:
         schedule.run_pending()
