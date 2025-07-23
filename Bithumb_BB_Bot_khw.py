@@ -36,28 +36,34 @@ def get_coin_list():
     print("TopCoinList 생성중")
     print("--------------------------------")
 
-    # === 1. 거래대금 기준 TopCoinList (상위 60개) ===
-    TOP_NUM_VALUE = 60
-    TOP_NUM_MA = 30
-    TOP_NUM_UPRATE = 15
+    # === 1. 거래대금 기준 TopCoinList (상위 20개) ===
+    TOP_NUM_VALUE = 30
+    TOP_NUM_MA = 20
+    TOP_NUM_UPRATE = 10
     Tickers = myBithumb.GetTickers()
     time.sleep(0.1)
-    CautionCoinList = myBithumb.Get_CAUTION_Tickers()
-    TIME_PERIOD = "30m"
+    CautionCoinList = []#myBithumb.Get_CAUTION_Tickers()
+    TIME_PERIOD = "1h"
 
-    # 거래대금 상위 60개
+    # 거래대금 상위 30개 (최근 24시간 합산)
     dic_coin_value = dict()
     for ticker in Tickers:
         if ticker in CautionCoinList:
             continue
         try:
             time.sleep(0.1)
-            df = myBithumb.GetOhlcv(ticker, TIME_PERIOD, 200)
+            df = myBithumb.GetOhlcv(ticker, TIME_PERIOD, 24)
             if len(df) < 1:
+                print(f"{ticker} has no data")
                 continue
-            current_value = float(df['value'].iloc[-1])
-            dic_coin_value[ticker] = current_value
-        except Exception:
+            # 최근 24시간 거래대금 합산
+            if len(df) >= 24:
+                value_24h = float(df['value'].iloc[-24:].sum())
+            else:
+                value_24h = float(df['value'].sum())
+            dic_coin_value[ticker] = value_24h
+        except Exception as e:
+            print(f"Error for {ticker}: {e}")
             continue
     dic_sorted_coin_value = sorted(dic_coin_value.items(), key=lambda x: x[1], reverse=True)
     TopCoinList_Value = [coin_data[0] for i, coin_data in enumerate(dic_sorted_coin_value) if i < TOP_NUM_VALUE]
@@ -152,30 +158,30 @@ def Bithumb_BB_Bot():
 
     ######################################################
     #이런식으로 해당 전략에 할당할 금액을 조절
-    InvestMoney = TotalMoney * 0.30 #30% 투자 적절히 수정!
+    InvestMoney = TotalMoney * 0.10 #30% 투자 적절히 수정!
     ######################################################
 
     InvestCoinList = get_coin_list()
 
     # === 투자 대상이 아닌 코인 전량 매도 ===
-    for coin, info in balances.items():
-        if coin == 'total' or coin == 'KRW':
+    for info in balances:
+        coin = info['currency']
+        if coin == 'KRW':
             continue
-        # info는 [보유수량, 평가금액, 매수금액, 매수평균가, 평가손익, 수익률] 등으로 구성되어 있다고 가정
-        # 보유수량이 0보다 크고, 투자대상에 없는 코인만 매도
         try:
-            amount = float(info[0])
+            amount = float(info['balance'])
         except Exception:
             continue
-        if amount > 0 and coin not in InvestCoinList:
-            print(f"{coin} 전량 매도: {amount}")
+        if amount > 0 and f"KRW-{coin}" not in InvestCoinList:
+            market_id = f"KRW-{coin}"
+            print(f"{market_id} 전량 매도: {amount}")
             try:
-                myBithumb.SellCoinMarket(coin, amount)
-                msg = f"{coin}는 투자대상에서 제외되어 전량({amount}) 매도했습니다."
+                myBithumb.SellCoinMarket(market_id, amount)
+                msg = f"{market_id}는 투자대상에서 제외되어 전량({amount}) 매도했습니다."
                 print(msg)
                 line_alert.SendMessage(msg)
             except Exception as e:
-                print(f"{coin} 매도 실패: {e}")
+                print(f"{market_id} 매도 실패: {e}")
 
     CoinMoney = InvestMoney / len(InvestCoinList) #코인당 할당 금액
 
@@ -183,8 +189,8 @@ def Bithumb_BB_Bot():
     StMoney = CoinMoney / 10.0 #10분할!
 
     FixMoneyRate = 0.0 #10분할 중 2개를 항상 가져가는 비중으로 설정
-    TrendMoneyRate = 2 #10분할 중 2개를 추세에 따라 정의
-    DantaMoneyRate = 8 #10분할 중 6개를 단타로 활용 
+    TrendMoneyRate = 3 #10분할 중 2개를 추세에 따라 정의
+    DantaMoneyRate = 7 #10분할 중 6개를 단타로 활용 
 
     print("StMoney:", str(format(round(StMoney), ',')))
 
@@ -284,7 +290,7 @@ def Bithumb_BB_Bot():
 
 
 
-        delay = '30m'
+        delay = '1h'
         #if PickCoinInfo['DateStrForToday'] != day_str: #오늘 매매 내역이 없다면
         if True:
 
@@ -647,10 +653,9 @@ def Bithumb_BB_Bot():
 import schedule      
 if __name__ == "__main__":
     trading_in_progress = False
-    #Bithumb_BB_Bot()  # 테스트용 즉시 실행
+    Bithumb_BB_Bot()  # 테스트용 즉시 실행
     #get_coin_list()
     schedule.every().hour.at(":01").do(Bithumb_BB_Bot)
-    schedule.every().hour.at(":31").do(Bithumb_BB_Bot)
     while True:
         schedule.run_pending()
         time.sleep(1)
