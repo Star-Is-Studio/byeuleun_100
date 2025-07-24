@@ -164,6 +164,15 @@ def Bithumb_BB_Bot():
     InvestCoinList = get_coin_list()
 
     # === 투자 대상이 아닌 코인 전량 매도 ===
+    strategy_info_file_path = "./Bithumb_BB_Bot_Info.json" 
+    StrategyInfoList = []  # 반드시 빈 리스트로 초기화
+    try:
+        with open(strategy_info_file_path, 'r') as json_file:
+            StrategyInfoList = json.load(json_file)
+    except Exception as e:
+        # 파일이 없거나 읽기 실패 시에도 빈 리스트로 유지
+        print("Exception by First or file read error", e)
+
     for info in balances:
         coin = info['currency']
         if coin == 'KRW':
@@ -172,16 +181,108 @@ def Bithumb_BB_Bot():
             amount = float(info['balance'])
         except Exception:
             continue
-        if amount > 0 and f"KRW-{coin}" not in InvestCoinList:
-            market_id = f"KRW-{coin}"
+        market_id = f"KRW-{coin}"
+        # 현재가 조회 (5천원 이하 코인 제외용)
+        try:
+            df = myBithumb.GetOhlcv(market_id, "1h", 1)
+            current_price = float(df['close'].iloc[-1])
+        except Exception:
+            continue
+        if amount * current_price < 5000:
+            continue
+        if amount > 0 and market_id not in InvestCoinList:
             print(f"{market_id} 전량 매도: {amount}")
             try:
                 myBithumb.SellCoinMarket(market_id, amount)
                 msg = f"{market_id}는 투자대상에서 제외되어 전량({amount}) 매도했습니다."
                 print(msg)
                 line_alert.SendMessage(msg)
+                StrategyInfoList = [item for item in StrategyInfoList if item.get('ticker') != market_id]
+                with open(strategy_info_file_path, 'w') as outfile:
+                    json.dump(StrategyInfoList, outfile)
             except Exception as e:
                 print(f"{market_id} 매도 실패: {e}")
+
+    # === 보유 코인 중 수익률 -8% 이하(손실 8% 이상)면 전량 매도, 20%/32% 익절 ===
+    for info in balances:
+        coin = info['currency']
+        if coin == 'KRW':
+            continue
+        try:
+            amount = float(info['balance'])
+        except Exception:
+            continue
+        market_id = f"KRW-{coin}"
+        # 현재가 조회 (5천원 이하 코인 제외용)
+        try:
+            df = myBithumb.GetOhlcv(market_id, "1h", 1)
+            current_price = float(df['close'].iloc[-1])
+        except Exception:
+            continue
+        if amount * current_price < 5000:
+            continue
+        if amount > 0:
+            # 평균 매입가를 함수로 얻기
+            avg_buy_price = myBithumb.GetAvgBuyPrice(balances, market_id)
+            if avg_buy_price == 0:
+                continue
+            # 수익률 계산
+            profit_rate = (current_price - avg_buy_price) / avg_buy_price * 100
+
+            # StrategyInfoList에서 해당 코인 정보 찾기 (익절 기록용)
+            PickCoinInfo = None
+            for CoinInfo in StrategyInfoList:
+                if CoinInfo.get('ticker') == market_id:
+                    PickCoinInfo = CoinInfo
+                    break
+
+            # === 32% 초과: 전량 익절 ===
+            if profit_rate > 32.0:
+                print(f"{market_id} 수익률 {profit_rate:.2f}%로 32% 초과, 전량 익절: {amount}")
+                try:
+                    myBithumb.SellCoinMarket(market_id, amount)
+                    msg = f"{market_id}는 수익률 {profit_rate:.2f}%로 32% 초과라 전량({amount}) 익절했습니다."
+                    print(msg)
+                    line_alert.SendMessage(msg)
+                    # StrategyInfoList에서 해당 코인 정보 삭제
+                    StrategyInfoList = [item for item in StrategyInfoList if item.get('ticker') != market_id]
+                    with open(strategy_info_file_path, 'w') as outfile:
+                        json.dump(StrategyInfoList, outfile)
+                except Exception as e:
+                    print(f"{market_id} 매도 실패: {e}")
+                continue  # 이미 전량 익절했으니 다음 코인으로
+
+            # === 20% 초과: 50% 익절(한 번만) ===
+            if profit_rate > 20.0 and PickCoinInfo is not None:
+                if not PickCoinInfo.get('TakeProfit20', False):
+                    sell_amount = amount * 0.5
+                    print(f"{market_id} 수익률 {profit_rate:.2f}%로 20% 초과, 50% 익절: {sell_amount}")
+                    try:
+                        myBithumb.SellCoinMarket(market_id, sell_amount)
+                        msg = f"{market_id}는 수익률 {profit_rate:.2f}%로 20% 초과라 50%({sell_amount}) 익절했습니다."
+                        print(msg)
+                        line_alert.SendMessage(msg)
+                        # 익절 기록
+                        PickCoinInfo['TakeProfit20'] = True
+                        with open(strategy_info_file_path, 'w') as outfile:
+                            json.dump(StrategyInfoList, outfile)
+                    except Exception as e:
+                        print(f"{market_id} 매도 실패: {e}")
+
+            # === -8% 이하: 전량 손절 ===
+            if profit_rate <= -8.0:
+                print(f"{market_id} 수익률 {profit_rate:.2f}%로 -8% 이하, 전량 매도: {amount}")
+                try:
+                    myBithumb.SellCoinMarket(market_id, amount)
+                    msg = f"{market_id}는 수익률 {profit_rate:.2f}%로 -8% 이하라 전량({amount}) 매도했습니다."
+                    print(msg)
+                    line_alert.SendMessage(msg)
+                    # StrategyInfoList에서 해당 코인 정보 삭제
+                    StrategyInfoList = [item for item in StrategyInfoList if item.get('ticker') != market_id]
+                    with open(strategy_info_file_path, 'w') as outfile:
+                        json.dump(StrategyInfoList, outfile)
+                except Exception as e:
+                    print(f"{market_id} 매도 실패: {e}")
 
     CoinMoney = InvestMoney / len(InvestCoinList) #코인당 할당 금액
 
